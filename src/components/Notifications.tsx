@@ -33,12 +33,19 @@ export function Notifications() {
         )}
       </button>
       {isOpen && (
-        <div className="absolute right-0 mt-2 w-80 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-800 dark:bg-slate-950">
-          <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-800">
-            <h3 className="font-semibold">Notificaciones</h3>
+        <div className="absolute left-[calc(100%-18rem)] z-[65] mt-2 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-800 dark:bg-slate-950 sm:right-0 sm:w-80 sm:max-w-80">
+          <div className="relative border-b border-slate-200 px-4 py-3 dark:border-slate-800">
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-700 dark:text-blue-100">Notificaciones</h3>
+            <button
+              onClick={() => setIsOpen(false)}
+              className="absolute right-2 top-2 rounded p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:text-blue-100 dark:hover:bg-slate-800 dark:hover:text-white"
+              aria-label="Cerrar notificaciones"
+            >
+              <span className="material-symbols-outlined text-base">close</span>
+            </button>
             <button
               onClick={() => void markAllAsRead()}
-              className="text-sm font-medium text-primary hover:underline"
+              className="mt-2 text-xs font-medium text-primary hover:underline"
             >
               Marcar todo como leído
             </button>

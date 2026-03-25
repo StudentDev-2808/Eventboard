@@ -21,7 +21,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     <ToastContext.Provider value={value}>
       {children}
       {message ? (
-        <div className="fixed bottom-6 right-6 z-50 rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow-2xl">
+        <div className="fixed bottom-4 z-[70] mx-auto w-auto max-w-sm rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow-2xl sm:inset-x-auto sm:bottom-6 sm:right-6 sm:mx-0">
           {message}
         </div>
       ) : null}

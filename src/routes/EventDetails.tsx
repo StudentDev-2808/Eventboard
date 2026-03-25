@@ -1,9 +1,24 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import { setCart } from "../lib/storage";
 import { useToast } from "../context/ToastContext";
+import { useAuth } from "../context/AuthContext";
 import type { EventItem, TicketType } from "../types";
+
+type ReviewProfile = {
+  full_name: string | null;
+  avatar_url: string | null;
+};
+
+type EventReviewItem = {
+  id: string;
+  user_id: string;
+  rating: number;
+  comment: string | null;
+  created_at: string;
+  profiles: ReviewProfile | ReviewProfile[] | null;
+};
 
 const speakers = [
   { name: "Dr. Sarah Chen", title: "AI Ethicist, Google", image: "https://lh3.googleusercontent.com/aida-public/AB6AXuCxQME8_rcDcU5kogarq3KxtQv-NKYngXnecg8SkkBn4JNx4BQJphsbYnJHztToKtE0n2q5ccIcfh57UOr05tJXQzfkbFgBNd3y3Vb29KoDLA_Edl9UIoaZhU5vb2d6ArxZmbWERQApy5xiIEC6ukRSYrnzGRYYv9Q3EhW4JtVzr7MPFapTQ9jAXpXg9bIB7UQJY7fNdejs7CcbD5sb7MqGfP-wI7IpzpnSitD7qOq9c7Mqlk56GoDKRlvQ_5oE128L5OXC92T6EWWc" },
@@ -12,49 +27,140 @@ const speakers = [
   { name: "David Park", title: "Partner, Y-Combinator", image: "https://lh3.googleusercontent.com/aida-public/AB6AXuDKnxwILgEttLazfi7NgFBZXBuCTSF0xwYaKKq6o08M7BKWTuDVxBVxtc3ZiDnAKhYN2MWD3Z6ywe8Orq2eDa4ng8SDWrRdigIdFv2FgB4PxpixC_9t-uKuV4keZjZUEas_q7A0Bd5lv8i_xz_rfy3e2rq-iwNLBAjmFpVZkgYaeg13yp9F-js4mcphT-3bMiunD_rmw1AySkB610PuXBWXsjt4_26HU0zc4ypmfjs0_yFJEfaOW8gIDGPLoKF8AsiOCldpKxueWm0R" },
 ];
 
+function normalizeReviewProfile(profile: EventReviewItem["profiles"]) {
+  return Array.isArray(profile) ? profile[0] ?? null : profile;
+}
+
 export default function EventDetails() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { showToast } = useToast();
+  const { user } = useAuth();
   const [eventItem, setEventItem] = useState<EventItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [ticketId, setTicketId] = useState<string>("");
   const [qty, setQty] = useState(1);
+  const [reviews, setReviews] = useState<EventReviewItem[]>([]);
+  const [reviewRating, setReviewRating] = useState(5);
+  const [reviewComment, setReviewComment] = useState("");
+  const [canReview, setCanReview] = useState(false);
+  const [hasOwnReview, setHasOwnReview] = useState(false);
+  const [submittingReview, setSubmittingReview] = useState(false);
 
   useEffect(() => {
     async function fetchEvent() {
       if (!id) return;
 
-      const { data, error } = await supabase.from("events").select("*, ticket_types(*)").eq("id", id).single();
+      const [eventResult, reviewsResult, purchasesResult, attendanceResult] = await Promise.all([
+        supabase.from("events").select("*, ticket_types(*)").eq("id", id).single(),
+        supabase
+          .from("event_reviews")
+          .select("id, user_id, rating, comment, created_at, profiles(full_name, avatar_url)")
+          .eq("event_id", id)
+          .order("created_at", { ascending: false }),
+        user
+          ? supabase.from("ticket_purchases").select("id", { head: true, count: "exact" }).eq("event_id", id).eq("user_id", user.id)
+          : Promise.resolve({ count: 0, error: null }),
+        user
+          ? supabase.from("event_attendance").select("id, status").eq("event_id", id).eq("user_id", user.id)
+          : Promise.resolve({ data: [], error: null }),
+      ]);
 
-      if (!error && data) {
-        const typedEvent = data as EventItem;
-        setEventItem(typedEvent);
-        const availableTickets = typedEvent.ticket_types?.filter((ticketType: TicketType) => ticketType.status !== "soldout");
-        if (availableTickets?.length) {
-          setTicketId(availableTickets[0].id);
-        }
-      } else {
-        showToast("Error al cargar detalles del evento");
+      if (eventResult.error) {
+        showToast("Error loading event details");
+        setLoading(false);
+        return;
       }
+      if (reviewsResult.error) {
+        showToast("Could not load reviews");
+      }
+      if (purchasesResult.error) {
+        showToast("Could not verify your purchase history");
+      }
+      if (attendanceResult.error) {
+        showToast("Could not verify attendance status");
+      }
+
+      const typedEvent = eventResult.data as EventItem;
+      setEventItem(typedEvent);
+      const availableTickets = typedEvent.ticket_types?.filter((ticketType: TicketType) => ticketType.status !== "soldout");
+      if (availableTickets?.length) {
+        setTicketId(availableTickets[0].id);
+      }
+
+      const nextReviews = (reviewsResult.data ?? []) as EventReviewItem[];
+      const attendanceRows = attendanceResult.data ?? [];
+      const canReviewByAttendance = attendanceRows.some((row) => row.status === "attended" || row.status === "registered");
+      const canReviewByPurchase = (purchasesResult.count ?? 0) > 0;
+
+      setReviews(nextReviews);
+      setCanReview(Boolean(user) && (canReviewByAttendance || canReviewByPurchase));
+      setHasOwnReview(nextReviews.some((review) => review.user_id === user?.id));
       setLoading(false);
     }
 
     void fetchEvent();
-  }, [id, showToast]);
+  }, [id, showToast, user]);
 
-  if (loading) return <div className="min-h-screen py-20 text-center text-slate-500 dark:text-blue-100/65">Cargando evento...</div>;
-  if (!eventItem) return <div className="min-h-screen py-20 text-center text-slate-500 dark:text-blue-100/65">Evento no encontrado.</div>;
-
-  const ticket = eventItem.ticket_types?.find((ticketType) => ticketType.id === ticketId);
+  const ticket = eventItem?.ticket_types?.find((ticketType) => ticketType.id === ticketId);
   const total = ticket ? Number(ticket.price) * qty : 0;
+  const averageRating = useMemo(() => {
+    if (reviews.length === 0) return null;
+    return reviews.reduce((sum, review) => sum + review.rating, 0) / reviews.length;
+  }, [reviews]);
 
   const handleCheckout = () => {
-    if (!ticket) return;
+    if (!eventItem || !ticket) return;
     setCart({ eventId: eventItem.id, ticketId: ticket.id, ticketName: ticket.name, qty, unitPrice: Number(ticket.price), createdAt: Date.now() });
-    showToast("Selección enviada al checkout");
+    showToast("Selection sent to checkout");
     navigate("/checkout");
   };
+
+  const submitReview = async () => {
+    if (!user || !eventItem) return;
+    if (!canReview) {
+      showToast("You need a purchase or attendance record to review this event");
+      return;
+    }
+    if (reviewComment.trim().length < 12) {
+      showToast("Write a more detailed review");
+      return;
+    }
+
+    try {
+      setSubmittingReview(true);
+      const { data, error } = await supabase
+        .from("event_reviews")
+        .upsert(
+          {
+            user_id: user.id,
+            event_id: eventItem.id,
+            rating: reviewRating,
+            comment: reviewComment.trim(),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "user_id,event_id" },
+        )
+        .select("id, user_id, rating, comment, created_at, profiles(full_name, avatar_url)")
+        .single();
+
+      if (error) throw error;
+
+      const nextReview = data as EventReviewItem;
+      setReviews((current) => [nextReview, ...current.filter((review) => review.id !== nextReview.id)]);
+      setHasOwnReview(true);
+      setReviewComment("");
+      showToast("Review saved");
+    } catch (error) {
+      console.error(error);
+      showToast("Could not save the review");
+    } finally {
+      setSubmittingReview(false);
+    }
+  };
+
+  if (loading) return <div className="min-h-screen py-20 text-center text-slate-500 dark:text-blue-100/65">Loading event...</div>;
+  if (!eventItem) return <div className="min-h-screen py-20 text-center text-slate-500 dark:text-blue-100/65">Event not found.</div>;
 
   return (
     <main className="mx-auto w-full max-w-7xl px-6 pb-20 pt-6 text-slate-900 dark:text-white">
@@ -66,14 +172,14 @@ export default function EventDetails() {
               {eventItem.category}
             </span>
             <span className="rounded-full border border-white/20 bg-white/10 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-white">
-              Venta rápida
+              Fast selling
             </span>
           </div>
           <h1 className="mb-6 text-5xl font-extrabold tracking-tighter text-white md:text-7xl">{eventItem.title}</h1>
           <div className="flex flex-wrap items-center gap-8 text-sm text-blue-100/80">
             <div className="flex items-center gap-2.5">
               <span className="material-symbols-outlined text-primary">calendar_today</span>
-              <span>{eventItem.date_label} • {eventItem.time_label}</span>
+              <span>{eventItem.date_label} - {eventItem.time_label}</span>
             </div>
             <div className="flex items-center gap-2.5">
               <span className="material-symbols-outlined text-primary">location_on</span>
@@ -90,11 +196,101 @@ export default function EventDetails() {
               <div className="rounded-lg bg-primary/10 p-2">
                 <span className="material-symbols-outlined text-primary">info</span>
               </div>
-              <h3 className="text-2xl font-bold">Acerca del evento</h3>
+              <h3 className="text-2xl font-bold">About the event</h3>
             </div>
             <div className="space-y-4 text-lg text-slate-600 dark:text-blue-100/70">
               <p>{eventItem.hero}</p>
-              <p>Únete a miles de asistentes en este evento con sesiones, networking y experiencias pensadas para una comunidad activa.</p>
+              <p>Join a community-driven experience with sessions, networking and content built around discovery and attendance.</p>
+            </div>
+          </section>
+
+          <section className="panel p-8">
+            <div className="mb-8 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="rounded-lg bg-primary/10 p-2">
+                  <span className="material-symbols-outlined text-primary">reviews</span>
+                </div>
+                <div>
+                  <h3 className="text-2xl font-bold">Reviews</h3>
+                  <p className="text-sm text-slate-500 dark:text-blue-100/58">Visible to all users. Publishing requires a purchase or attendance record.</p>
+                </div>
+              </div>
+              <div className="text-right">
+                <p className="text-3xl font-black text-primary">{averageRating ? averageRating.toFixed(1) : "-"}</p>
+                <p className="text-sm text-slate-500 dark:text-blue-100/58">{reviews.length} review(s)</p>
+              </div>
+            </div>
+
+            <div className="grid gap-6 lg:grid-cols-[0.95fr_1.05fr]">
+              <div className="rounded-2xl border border-line-light bg-blue-50/50 p-5 dark:border-line-dark dark:bg-surface-dark-alt">
+                <h4 className="text-lg font-bold">Share your experience</h4>
+                <p className="mt-2 text-sm text-slate-500 dark:text-blue-100/60">
+                  {canReview ? "You can publish a review for this event." : "Buy or register for the event to unlock reviews."}
+                </p>
+                {hasOwnReview ? (
+                  <p className="mt-3 text-xs font-semibold uppercase tracking-[0.18em] text-primary">You already have a review. Saving again updates it.</p>
+                ) : null}
+                <div className="mt-5 flex gap-2">
+                  {[1, 2, 3, 4, 5].map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setReviewRating(value)}
+                      className={`flex size-11 items-center justify-center rounded-xl border text-sm font-bold ${
+                        value <= reviewRating
+                          ? "border-primary bg-primary text-white"
+                          : "border-line-light bg-white text-slate-500 dark:border-line-dark dark:bg-surface-dark dark:text-blue-100/60"
+                      }`}
+                    >
+                      {value}
+                    </button>
+                  ))}
+                </div>
+                <textarea
+                  className="field mt-4 min-h-[140px]"
+                  value={reviewComment}
+                  onChange={(event) => setReviewComment(event.target.value)}
+                  placeholder="What stood out? Was the organization solid? Would you attend again?"
+                />
+                <button
+                  type="button"
+                  onClick={() => void submitReview()}
+                  disabled={submittingReview || !canReview}
+                  className="btn-primary mt-4 w-full justify-center disabled:opacity-50"
+                >
+                  {submittingReview ? "Saving..." : hasOwnReview ? "Update review" : "Publish review"}
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                {reviews.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-line-light p-6 text-sm text-slate-500 dark:border-line-dark dark:text-blue-100/58">
+                    No reviews yet. Be the first attendee to leave one.
+                  </div>
+                ) : (
+                  reviews.map((review) => {
+                    const profile = normalizeReviewProfile(review.profiles);
+                    const avatar = profile?.avatar_url ?? `https://ui-avatars.com/api/?name=${encodeURIComponent(profile?.full_name ?? "Evento")}&background=135bec&color=fff`;
+                    return (
+                      <article key={review.id} className="rounded-2xl border border-line-light bg-white p-5 dark:border-line-dark dark:bg-surface-dark-alt">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex items-center gap-3">
+                            <img src={avatar} alt={profile?.full_name ?? "Reviewer"} className="size-11 rounded-full object-cover" />
+                            <div>
+                              <p className="font-semibold">{profile?.full_name ?? "Anonymous attendee"}</p>
+                              <p className="text-xs text-slate-500 dark:text-blue-100/58">{new Date(review.created_at).toLocaleDateString()}</p>
+                            </div>
+                          </div>
+                          <div className="rounded-full bg-primary/12 px-3 py-1 text-xs font-bold uppercase tracking-[0.18em] text-primary">
+                            {review.rating}/5
+                          </div>
+                        </div>
+                        <p className="mt-4 text-sm leading-6 text-slate-600 dark:text-blue-100/68">{review.comment}</p>
+                      </article>
+                    );
+                  })
+                )}
+              </div>
             </div>
           </section>
 
@@ -103,7 +299,7 @@ export default function EventDetails() {
               <div className="rounded-lg bg-primary/10 p-2">
                 <span className="material-symbols-outlined text-primary">groups</span>
               </div>
-              <h3 className="text-2xl font-bold">Oradores destacados</h3>
+              <h3 className="text-2xl font-bold">Featured speakers</h3>
             </div>
             <div className="grid gap-8 sm:grid-cols-2 lg:grid-cols-4">
               {speakers.map((speaker) => (
@@ -123,7 +319,7 @@ export default function EventDetails() {
           <div className="panel p-8">
             <h3 className="mb-6 flex items-center gap-2 text-xl font-bold">
               <span className="material-symbols-outlined text-primary">confirmation_number</span>
-              Selecciona tus tickets
+              Select your tickets
             </h3>
             <div className="space-y-4">
               {eventItem.ticket_types?.map((ticketType) => (
@@ -151,13 +347,13 @@ export default function EventDetails() {
             {ticket ? (
               <>
                 <div className="mt-6 flex items-center justify-between rounded-xl border border-line-light bg-blue-50/60 px-4 py-3 dark:border-line-dark dark:bg-surface-dark-alt">
-                  <span className="text-sm font-semibold text-slate-700 dark:text-blue-100/80">Cantidad</span>
+                  <span className="text-sm font-semibold text-slate-700 dark:text-blue-100/80">Quantity</span>
                   <div className="flex items-center gap-2">
-                    <button onClick={() => setQty(Math.max(1, qty - 1))} className="flex size-8 items-center justify-center rounded-lg bg-white dark:bg-surface-dark">
+                    <button onClick={() => setQty(Math.max(1, qty - 1))} className="flex size-8 items-center justify-center rounded-lg bg-white dark:bg-surface-dark" type="button">
                       -
                     </button>
                     <span className="text-sm font-semibold">{qty}</span>
-                    <button onClick={() => setQty(qty + 1)} className="flex size-8 items-center justify-center rounded-lg bg-white dark:bg-surface-dark">
+                    <button onClick={() => setQty(qty + 1)} className="flex size-8 items-center justify-center rounded-lg bg-white dark:bg-surface-dark" type="button">
                       +
                     </button>
                   </div>
@@ -172,8 +368,8 @@ export default function EventDetails() {
                     <span>${total.toFixed(2)}</span>
                   </div>
                 </div>
-                <button onClick={handleCheckout} className="mt-6 w-full rounded-xl bg-primary py-4 text-sm font-bold text-white shadow-lg shadow-primary/20 transition hover:bg-blue-500">
-                  Comprar tickets
+                <button onClick={handleCheckout} className="mt-6 w-full rounded-xl bg-primary py-4 text-sm font-bold text-white shadow-lg shadow-primary/20 transition hover:bg-blue-500" type="button">
+                  Buy tickets
                 </button>
               </>
             ) : null}

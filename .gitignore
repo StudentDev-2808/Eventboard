@@ -25,3 +25,9 @@ dist-ssr
 .env
 .env.*
 supabase/schema.sql
+.agents
+.agent
+.vscode
+.vscode-test
+supabase
+skills-lock.json
