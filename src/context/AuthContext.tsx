@@ -124,6 +124,9 @@ export function AuthProvider({ children }: PropsWithChildren) {
           provider: "google",
           options: {
             redirectTo: `${window.location.origin}/`,
+            queryParams: {
+              prompt: "select_account",
+            },
           },
         });
         if (error) throw error;
@@ -132,6 +135,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
         const { error } = await supabase.auth.signOut();
         if (error) throw error;
         setUser(null);
+        setSession(null);
       },
       loginWithEmail: async (email, password) => {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
